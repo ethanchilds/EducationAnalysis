@@ -1,0 +1,214 @@
+---
+title: "DataExplore"
+author: "Ethan Childs"
+date: "2025-03-11"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(patchwork)
+states <- read_csv('states_all.csv')
+```
+
+```{r}
+getStats <- function(data) {
+  stats <- c(min(data, na.rm = TRUE), 
+             max(data, na.rm = TRUE), 
+             mean(data, na.rm = TRUE), 
+             median(data, na.rm = TRUE), 
+             sd(data, na.rm = TRUE), 
+             length(data), 
+             sum(is.na(data)))
+  
+  return(stats)
+}
+
+summary <- function(data) {
+  cols <- colnames(data)
+  
+  stats_list <- list()  
+  
+  for (col in cols){
+    stats <- getStats(data[[col]])
+    stats_list[[col]] <- stats  
+  }
+  
+  
+  df <- as.data.frame(stats_list)
+  rownames(df) <- c("min", "max", "mean", "median", "sd", "n", "num_na")
+  return(df)
+}
+```
+
+
+```{r}
+summary(states[, -c(1,2)])
+#AVG_READING_8_SCORE
+```
+
+```{r}
+small <- subset(states, !is.na(AVG_READING_8_SCORE))
+summary(small[, -c(1,2)])
+```
+
+```{r}
+table(small$STATE)
+# Ignore Dodea and National
+
+smaller <- small %>% filter(!STATE %in% c('NATIONAL', 'DODEA'))
+summary(smaller[, -c(1,2)])
+```
+
+
+```{r}
+smaller %>%
+  group_by(YEAR, STATE) %>%
+  summarize(count = n())
+# Mostly consistent record keeping from 1998, 2002, and then every 2 years from 2003 to 2019
+```
+
+
+```{r, fig.width=10, fig.height=10}
+## Identification 1-3
+## Enrollment 14-21
+## Financials 4 - 13
+## Achievement 22 - 25
+
+pairs(smaller[, seq(14,25)])
+```
+
+```{r, fig.width=10, fig.height=10}
+pairs(smaller[,c(4:13, 22:25)])
+```
+```{r}
+ggplot(smaller, aes(x=TOTAL_EXPENDITURE, y=AVG_READING_8_SCORE))+
+  geom_point()
+```
+
+```{r}
+top_exp <- smaller %>% group_by(STATE) %>% 
+  summarise(
+    avg_expenditure = mean(TOTAL_EXPENDITURE, na.rm=TRUE),
+    avg_reading_8 = mean(AVG_READING_8_SCORE, na.rm=TRUE)
+  ) %>% arrange(desc(avg_expenditure)) %>% 
+  slice_head(n=10)
+
+p1 <- ggplot(top_exp, aes(x=avg_expenditure, y= reorder(STATE, avg_expenditure))) +
+  geom_col()+
+  ggtitle('plot1')
+
+p2 <- ggplot(top_exp, aes(x=avg_reading_8, y= reorder(STATE, avg_expenditure)))+
+  geom_col()+
+  ggtitle('plot2')+
+  theme(
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks = element_blank()
+  )
+
+(p1 | p2) + 
+  plot_annotation(
+    title = "Singular Title for Both Plots", 
+    theme = theme(plot.title = element_text(hjust = 0.5, size = 16))
+  )
+
+```
+
+
+```{r}
+bot_exp <- smaller %>% group_by(STATE) %>% 
+  summarise(
+    avg_expenditure = mean(TOTAL_EXPENDITURE, na.rm=TRUE),
+    avg_reading_8 = mean(AVG_READING_8_SCORE, na.rm=TRUE)
+  ) %>% arrange(avg_expenditure) %>% 
+  slice_head(n=10)
+
+p1 <- ggplot(bot_exp, aes(x=avg_expenditure, y= reorder(STATE, avg_expenditure))) +
+  geom_col()+
+  ggtitle('plot1')
+
+p2 <- ggplot(bot_exp, aes(x=avg_reading_8, y= reorder(STATE, avg_expenditure)))+
+  geom_col()+
+  ggtitle('plot2')+
+  theme(
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks = element_blank()
+  )
+
+(p1 | p2) + 
+  plot_annotation(
+    title = "Singular Title for Both Plots", 
+    theme = theme(plot.title = element_text(hjust = 0.5, size = 16))
+  )
+
+```
+
+
+
+```{r}
+smaller_eps <- smaller %>% mutate(
+  eps = TOTAL_EXPENDITURE / ENROLL
+)
+
+ggplot(smaller_eps, aes(x = eps, y=AVG_READING_8_SCORE))+
+  geom_point()
+```
+
+
+
+```{r}
+smaller_eps %>% 
+  filter(
+    AVG_READING_8_SCORE < 245 | eps > 25
+  )
+```
+
+```{r}
+ggplot(smaller_eps, aes(
+  x=eps, 
+  y=AVG_READING_8_SCORE, 
+  color=ifelse(STATE == 'DISTRICT_OF_COLUMBIA', 'DC', 'Main50')
+))+geom_point()+
+  scale_color_manual(values = c("DC" = "red", "Main50" = "blue")) +
+  theme(legend.title = element_blank())
+```
+
+
+```{r}
+smaller_eps %>%
+  filter(AVG_READING_8_SCORE > 245 & eps < 25) %>% 
+  ggplot(aes(x=eps, y=AVG_READING_8_SCORE))+
+  geom_point()
+```
+
+
+```{r}
+pairs(smaller_eps[, c(22:25)])
+```
+
+```{r}
+cor(smaller_eps[, c(22:25)], use = "complete.obs")
+```
+
+```{r}
+cor(smaller_eps[, c(4:13)], use = "complete.obs")
+```
+
+```{r}
+cor(smaller_eps[, c(14:21)], use = "complete.obs")
+# GRADES_PK_G, GRADES_ALL_G
+```
+
+```{r}
+records <- states %>% filter(YEAR %in% seq(2003,2019,2))
+summary(records[, -c(1,2)])
+```
+
+```{r}
+table(records$STATE)
+```
+
+
+

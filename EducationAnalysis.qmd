@@ -1,0 +1,659 @@
+---
+title: "Exploring Academic Success at State Level Granularity"
+author: "Ethan Childs"
+format: 
+  html:
+    code-fold: true
+    code-tools: true
+include-in-header:
+  - text: |
+      <style>
+      .panel-tabset > .nav-tabs,
+      .panel-tabset > .tab-content {
+        border: none;
+      }
+      </style>
+editor: visual
+---
+
+```{r, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(leaps)
+library(glmnet)
+library(neuralnet)
+library(DT)
+library(corrplot)
+library(patchwork)
+library(sjPlot)
+library(sjmisc)
+library(sjlabelled)
+states <- read_csv('states_all.csv')
+
+getStats <- function(data) {
+  stats <- c(min(data, na.rm = TRUE), 
+             max(data, na.rm = TRUE), 
+             round(mean(data, na.rm = TRUE), 2), 
+             median(data, na.rm = TRUE), 
+             round(sd(data, na.rm = TRUE), 2), 
+             length(data), 
+             sum(is.na(data)))
+  
+  return(stats)
+}
+
+summaryStats <- function(data) {
+  cols <- colnames(data)
+  
+  stats_list <- list()  
+  
+  for (col in cols){
+    stats <- getStats(data[[col]])
+    stats_list[[col]] <- stats  
+  }
+  
+  
+  df <- as.data.frame(stats_list)
+  rownames(df) <- c("min", "max", "mean", "median", "sd", "n", "num_na")
+  return(df)
+}
+```
+## Introduction
+
+The '[U.S. Education Datasets: Unification Project](https://www.kaggle.com/datasets/noriuk/us-education-datasets-unification-project?resource=download)' is a dataset posted by Roy Garrad on Kaggle. This dataset was created with the intention to unify multiple facets of U.S. education data into one convenient source. This data is at a state level granularity, allowing us to derive insights about how these facets of U.S. education relate to each other. For more information about the raw data, please refer to the data dictionary section of this report.
+
+I was particularly interested in this dataset for its data pulled from the Nation's Report Card, which details information on reading and math scores. In this dataset it takes the form of a state average score for reading and math NAEP score of 4th and 8th graders. The reason this had caught my eye is because I had previously worked in the space of predicting academic success at an individual granularity, which had little to no promising results. I was interested in seeing if at a state level of granularity I could make some interesting statistical connects.
+
+For this project, my guiding questions were as follows:
+
+* How does expenditure relate to academic achievement?
+  + I believe this to be a question worth looking into as there is so much discussion regarding cutting spending on education. Do the high amounts of money spent by some states correlate with better academic achievement?
+* Can we use enrollment and finances to predict academic achievement?
+  + Partially being a continuation of the previous question, this question looks to explore the predictive power of all features in the dataset and how they are related with academic performance. A strong ability to predict academic achievement could lead to the ability to note ways states can improve their own academic achievement.
+
+::: {.panel-tabset .nav-pills}
+
+## Data Processing
+
+While this data is actually rather clean thanks to the work of Roy when he compiled this data, for our purposes, which will require no NA values to be present in the data, this data did need some processing done prior to any further work. 
+
+This data originally contained 1715 rows, containing data from the years of 1986 to 2019. The problem with combining data from these three different data sources, however, is that their record completion varies heavily across these years. One of the most notable spots of missing data is in our target variables, pulled from the Nation's Report Card. The Nation's Report Card does not make information from every year available, only the odd years, making even years unusable for our purposes. Overall, the most complete data I found was every other year from 2003 to 2015. This filtering resulted in only two NA values in the `GRADES_PK` column, which I decided to fill with the mean of the column.
+
+Finally, this data also contains more than just the 50 U.S. states. It also contains data for DoDEA, D.C., and national. I decided to exclude these each for their own reasons; national not being the granularity I wanted to explore at this time, DoDEA, the department of defense's education system, being far too different from the rest of the states, and D.C. for a reason we will explore in the next section. Filtering for these left us with 350 rows of clean data, seven years for each state. The final clean data can be observed below:
+
+```{r}
+data <- states %>% 
+  filter(!STATE %in% c('NATIONAL', 
+                       'DODEA', 
+                       'DISTRICT_OF_COLUMBIA')) %>% 
+  filter(YEAR %in% seq(2003,2015,2))
+
+data$GRADES_PK_G[is.na(data$GRADES_PK_G)] <- mean(data$GRADES_PK_G, na.rm = TRUE)
+
+datatable(data)
+```
+
+<br>
+
+The following is the summary statistics for all features in the dataset, not including non-numeric columns:
+
+```{r}
+datatable(summaryStats(data[, -c(1,2)]))
+```
+
+## Data Exploration
+
+The first problem I needed to tackle for this data was which variable would be my target. This data has four different variables from the Nation's Report Card that can help me quantify academic success, those being:
+
+* `AVG_MATH_4_SCORE`: The state's average score for fourth graders taking the NAEP math exam.
+* `AVG_MATH_8_SCORE`: The state's average score for eight graders taking the NAEP math exam.
+* `AVG_READING_4_SCORE`: The state's average score for fourth graders taking the NAEP reading exam.
+* `AVG_READING_8_SCORE`: The state's average score for eighth graders taking the NAEP reading exam.
+
+My intuition was that these variables would be highly correlated, with linear relationships between the variables, as I felt the overall quality of education would not be drastically different between reading and math topics. To explore this, I created the below pairs and correlation plots of these features.
+
+```{r}
+pairs(data[, c(22:25)])
+```
+
+```{r}
+# https://cran.r-project.org/web/packages/corrplot/vignettes/corrplot-intro.html
+# corrplot explanation
+
+cor_matrix <- cor(data[, c(22:25)])
+
+corrplot(cor_matrix, 
+         method = 'square', 
+         diag = FALSE, 
+         rect.col = 'blue', 
+         rect.lwd = 3, 
+         tl.pos = 'd',
+         tl.cex=0.35,
+         addCoef.col = "black",
+         number.cex = 0.8)
+```
+
+As all these variables can be seen to be incredibly correlated, with linear relationships between each of them, I decided to arbitrarily choose my target variable for this project as `AVG_READING_8_SCORE`, assuming that choosing any of the other variables would yield similar results. 
+
+Beyond just the correlation matrix seen above, I felt it would be useful to visualize the correlation between all the features in this dataset as there is only 22 non-numeric features. While a little shading can be seen, it is clear that almost no feature in our dataset has a strong correlation to target variables, meaning teasing out meaningful relationship may prove difficult.
+
+```{r, fig.width=10, fig.height=10}
+cor_matrix <- cor(data[4:25])
+
+corrplot(cor_matrix, method = "color", type = "upper", tl.cex = 0.8)
+```
+
+While the correlation plot above showed that many of the variables in this dataset have very low correlation with the target, I still wanted to explore expenditure v.s. academic success as this was one of our main goals for this project. In order to do this, my first thought was to simply plot expenditure v.s. our target, the reading NAEP score of 8th grades. To make an easier to understand visual I decided to look at the state averages of variables and then compare the top 10 spenders with the bottom 10 spenders.
+
+The results displayed in the plot likely could have been predicted from the correlation matrix, but from these bar charts, we see nearly no increased benefit in spending v.s. academic achievement. Notably, Vermont spends the seventh least among U.S. states, yet it appears to have some of the highest average scores. California, New York, and Texas spend 2-3 times that of the fourth highest spending state, Illinois, and yet they each have lower average reading scores.  This raises an important question: if higher spending does not directly translate to higher average scores, what factors do?
+
+```{r, fig.width=10, fig.height=10}
+data_wdc <- states %>% 
+  filter(!STATE %in% c('NATIONAL', 
+                       'DODEA')) %>% 
+  filter(YEAR %in% seq(2003,2015,2))
+
+data_wdc$GRADES_PK_G[is.na(data_wdc$GRADES_PK_G)] <- mean(data_wdc$GRADES_PK_G, na.rm = TRUE)
+
+top_exp <- data_wdc %>% group_by(STATE) %>% 
+  summarise(
+    avg_expenditure = mean(TOTAL_EXPENDITURE, na.rm=TRUE),
+    avg_reading_8 = mean(AVG_READING_8_SCORE, na.rm=TRUE)
+  ) %>% arrange(desc(avg_expenditure)) %>% 
+  slice_head(n=10)
+
+p1 <- ggplot(top_exp, aes(x=avg_expenditure, y= reorder(STATE, avg_expenditure))) +
+  geom_col(fill = '#A7C7E7')+
+  theme_bw()+
+  theme(
+    axis.title.y = element_blank(),
+    axis.title.x = element_text(size=10)
+  )+
+  labs(x='Avg Expenditure')
+
+p2 <- ggplot(top_exp, aes(x=avg_reading_8, y= reorder(STATE, avg_expenditure)))+
+  geom_col(fill='#A7C7E7')+
+  theme_bw()+
+  theme(
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks = element_blank(),
+    axis.title.x = element_text(size=10)
+  )+
+  labs(
+    x='Avg NAEP Reading 8th Grade'
+  )
+
+p_main1 <- (p1 | p2) + 
+  plot_annotation(
+    title = "Average Expenditure v.s. Average 8th\nGrade NAEP Reading Score of Top 10 Spenders", 
+    theme = theme(plot.title = element_text(hjust = 0.5, size = 16))
+  )
+
+bot_exp <- data_wdc %>% group_by(STATE) %>% 
+  summarise(
+    avg_expenditure = mean(TOTAL_EXPENDITURE, na.rm=TRUE),
+    avg_reading_8 = mean(AVG_READING_8_SCORE, na.rm=TRUE)
+  ) %>% arrange(avg_expenditure) %>% 
+  slice_head(n=10)
+
+p1 <- ggplot(bot_exp, aes(x=avg_expenditure, y= reorder(STATE, avg_expenditure))) +
+  geom_col(fill = '#A7C7E7')+
+  theme_bw()+
+  theme(
+    axis.title.y = element_blank(),
+    axis.title.x = element_text(size=10)
+  )+
+  labs(x='Avg Expenditure')
+
+p2 <- ggplot(bot_exp, aes(x=avg_reading_8, y= reorder(STATE, avg_expenditure)))+
+  geom_col(fill='#A7C7E7')+
+  theme_bw()+
+  theme(
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks = element_blank(),
+    axis.title.x = element_text(size=10)
+  )+
+  labs(
+    x='Avg NAEP Reading 8th Grade'
+  )
+
+p_main2 <- (p1 | p2) + 
+  plot_annotation(
+    title = "Average Expenditure v.s. Average 8th Grade\nNAEP Reading Score of Bottom 10 Spenders", 
+    theme = theme(plot.title = element_text(hjust = 0.5, size = 16))
+  )
+
+(p_main1 |> wrap_elements()) / (p_main2 |> wrap_elements())
+```
+
+
+After some time sitting with the results of the above plot I made a key realization about this data. While direct amount of spending seemed to yield no relationship with our target, it is very apparent that the top spenders are some of the largest states in the U.S. and the bottom spenders are some of the smallest states in the U.S., so it very likely spending becomes a proxy for enrollment. To account for this relationship, I created a new variable, `eps`, or expenditure per student, which can be calculated as `TOTAL_EXPENDITURE` / `ENROLL`. Below are summary statistics for the column:
+
+```{r}
+data_wdc <- data_wdc %>% 
+  mutate(eps = TOTAL_EXPENDITURE / ENROLL)
+data <- data %>% 
+  mutate(eps = TOTAL_EXPENDITURE / ENROLL)
+
+eps_stats <- round(getStats(data$eps), 2)
+cols <- c('min', 'max', 'mean', 'median', 'sd', 'n', 'sum_na')
+
+eps_data <- data.frame(
+  cols,
+  eps_stats
+) %>% 
+  pivot_wider(
+    names_from = cols,
+    values_from = eps_stats
+  )
+
+datatable(eps_data)
+```
+
+<br>
+
+With the new `eps` variable in mind, I decided to explore the relationship between it and our target variable with a scatter plot. Earlier I had mentioned that we would discuss the exclusion of D.C. from our final dataset and this plot is what led me to excluding it. We initially see a very exciting linear trend between eps and our target, but there is also several extreme outliers. 
+
+When visualized properly, it becomes easy to tell that each of these outliers is D.C., which, for whatever reason, has significantly lower reading score regardless of their far above average spending per student. While this does propose an important question to answer, it was not a goal that I had set for this project and I don't feel the current data I have can yield any strong insights about it. However, while D.C. may present as an outlier, its trend with eps is also still relatively linear, meaning if I did not want to exclude it from my data, a multiple linear regression model could likely model the relationship well.
+
+
+```{r}
+ggplot(data_wdc, aes(
+  x=eps, 
+  y=AVG_READING_8_SCORE, 
+  color=ifelse(STATE == 'DISTRICT_OF_COLUMBIA', 'DC', 'Main50')
+))+geom_point()+
+  scale_color_manual(values = c("DC" = "red", "Main50" = "blue")) +
+  theme_bw()+
+  theme(legend.title = element_blank())+
+  labs(
+    x='Expenditure per Student',
+    y='Avg Reading Score',
+    title='Expenditure per Student v.s. Average\n8th Grade NAEP Reading Score'
+  )
+```
+
+Due to the strong linear relationship between `eps` and `AVG_READING_8_SCORE`, I decided to move forward into modeling rather than continue to torture the data for more insights. From what the correlation matrix of our non-numeric features showed, I believe it would be hard to extract any further trends without more feature engineering.
+
+
+## Data Modeling
+
+### Basic Linear Regression
+
+When choosing how to predict the target `AVG_READING_8_SCORE`, I first wanted to do two things. Explore the relationship between `eps` and the target with simple regression and to establish a baseline for how strong a model should be in order to provide predictive power that is better than a basic regression model with all variables. To look into the first question I created a model with just `eps`, one with every numeric feature, and one with every numeric feature but `eps`.
+
+Below is a summary of the linear model fit by just using `eps` as the predictor for `AVG_READING_8_SCORE`. From this we see that `eps` was in fact a statistically significant predictor of our target with a p-value less than 0.001. However, while `eps` is significant it cannot be said that it can explain the target on its own. With an R^2^ of 0.193, only about 20% of the variability in our target is explained by the model fit just on `eps`. For just one variable this is pretty good, but far from where we would like it.
+
+```{r}
+#https://cran.r-project.org/web/packages/sjPlot/vignettes/tab_model_estimates.html
+# explanation of tab_model
+lm1 <- lm(AVG_READING_8_SCORE~eps, data=data)
+
+tab_model(lm1)
+```
+
+<br>
+
+While it is still possible to visualize our models, I wanted to take a second to plot this model over the scatter plot of our data. We do not learn much that is new from this plot, but it is clear that while `eps` is certainly a required element for predicting academic success, it does not explain all the variability of academic success.
+
+```{r, message=FALSE, warning=FALSE}
+ggplot(data, aes(
+  x=eps, 
+  y=AVG_READING_8_SCORE))+
+  geom_point()+
+  theme_bw()+
+  theme(legend.title = element_blank())+
+  geom_smooth(method = "lm", color = "blue", se = FALSE)+
+  labs(
+    x='Expenditure per Student',
+    y='Avg Reading Score',
+    title='Expenditure per Student v.s. Average\n8th Grade NAEP Reading Score'
+  )
+```
+
+
+Visualized below is a comparison of two model summary outputs. In the left column is the linear model fit with all numeric variables in the dataset and in the right column is the linear model fit with all numeric variables but `eps`. From this it becomes clear that `eps` is doing most of the heavy lifting when it comes tp explaining the variability in `AVG_READING_8_SCORE`. While the model without `eps` was able to obtain an R^2^ of 0.368, that 0.17 increase from the R^2^ of the model fit with just `eps`, does not seem impressive given how statistically insignificant most of the features are. Just removing `eps` from the model with all numeric features resulted in a 0.08 drop in R^2^, a rather significant result from removing one variable. 
+
+```{r}
+lm2 <- lm(AVG_READING_8_SCORE~., data[,c(4:7, 9:21,25,26)])
+lm3 <- lm(AVG_READING_8_SCORE~., data[,c(4:7, 9:21,25)])
+
+tab_model(lm2, lm3)
+```
+
+<br> 
+
+Going forward we know that a simple linear regression model can at most provide an R^2^ of 0.449, so other models should hopefully achieve at least a similar R^2^.
+
+### Best Subset Selection
+
+The first method I looked into for creating the best possible model was a best subset feature selection that is provided by the 'leap' library. This method makes use of RSS to determine the best model with each number of features 1 to $n$, where $n$ is the maximum number of features we would like to include in the model.
+
+Using the regsubsets function from the leap library, we fit all models with different number of features and compare the best ones using several criteria. While this function does provide a summary output, we will not be including it here as it is rather extensive and hard to read. However, from this summary, we can easily visualize different model criterion against the number of features included. From the below plot of these criterion we can tell that the optimal number of features is somewhere between five and ten as that is where the performance elbow lies on each plot.
+
+```{r}
+small <- data[,c(4:7, 9:21,25,26)]
+regfit.full <-regsubsets(AVG_READING_8_SCORE~., data = small, nvmax = 19)
+regSum <- summary(regfit.full)
+
+par(mfrow = c(2, 2))
+plot(regSum$rss, xlab = "Number of Variables",
+ ylab = "RSS", type = "l")
+plot(regSum$adjr2, xlab = "Number of Variables",
+ ylab = "Adjusted RSq", type = "l")
+plot(regSum$bic, xlab = "Number of Variables",
+ ylab = "bic", type = "l")
+plot(regSum$cp, xlab = "Number of Variables",
+ ylab = "Cp", type = "l")
+
+mtext("Model Selection Criteria Across Number of Features Included", outer = TRUE, cex = 1, line = -1)
+```
+
+Rather than providing a lengthy report on each model tested, I will instead just provide a summary of the testing done and the output of the best model. I tried all configurations between five and ten, but what I found was that anything after nine features results in statistical insignificance and anything below nine features provides a worse R^2^, which is to be expected. With this in mind I then landed on the nine feature model as the best.
+
+```{r}
+lm4 <- lm(AVG_READING_8_SCORE~FEDERAL_REVENUE+STATE_REVENUE+INSTRUCTION_EXPENDITURE+GRADES_KG_G+GRADES_4_G+GRADES_12_G+GRADES_9_12_G+GRADES_ALL_G+eps, data=data)
+
+tab_model(lm4)
+```
+
+<br>
+
+With an R^2^ of 0.435, this model achieves incredibly similar results to the model including all features, without including nine of them. Furthermore, below are some important plots checking regression assumptions for the model. While it appears to be mostly fine, there does appear to be in issue with the variance of the error terms as shown by the first plot. It is not too extreme as the red line hugs the center of the graph, but the negative trend is not what we would like to see from a linear model that is meeting all assumptions.
+
+```{r}
+par(mfrow=c(1,3))
+plot(lm4, which=1:2)
+plot(lm4$residuals, main="Residuals vs Order", xlab="",
+     ylab="Residuals")
+```
+
+### Ridge and Lasso Regression
+
+Beyond just subset feature selection, I wanted to explore ridge and lasso regression models and their performance. While I will be exploring the lasso in this section, I would like to note that due to the high correlation between features, ridge regression is our best option in this case, something that we will see later. To fit our models with ridge and lasso regularization, we will be using the glmnet library, which makes this process very simple.
+
+glmnet computes the best regression model over an automatic range of lambdas, cross-validating the models as it goes to determine the best lambda value for the ridge regression as it goes. Displayed below are the coefficients of the ridge regression model with the lowest cross-validation MSE. From it we can see that almost all features have had their coefficients reduced to almost zero, except for `eps`, which has a similar intercept to the simple model we fit using it as the only predictor. This model was fit using all of the data and the best lambda value was found to be 0.2634518, which resulted in an R^2^ of about 0.752, a drastic improvement over the model fit using best subset feature selection.
+
+```{r}
+set.seed(42)
+x <-model.matrix(AVG_READING_8_SCORE~., small)[,-1]
+y <- small$AVG_READING_8_SCORE
+
+cv.out <-cv.glmnet(x, y, alpha = 0)
+bestlamRidge <- cv.out$lambda.min
+ridge.pred <- predict(cv.out, s = bestlamRidge,  newx = x)
+
+ss_total <- sum((small$AVG_READING_8_SCORE - mean(small$AVG_READING_8_SCORE))^2)
+ss_residual <- sum((ridge.pred - mean(small$AVG_READING_8_SCORE))^2)
+
+ridge_r2 <- 1 - (ss_residual / ss_total)
+coef(cv.out, s = "lambda.min")
+```
+
+Moving onto lasso regularization, I once again used the glmnet library to fit a lasso regression model trained on all the data. Below are the coefficients of this model. From it we see that `TOTAL_EXPENDITURE`, `GRADES_8_G`, `GRADES_1_8_G`, and `GRADES_ALL_G` all had their coefficients reduced to zero, removing them from the model. I do find it interesting that when it came to predicting an 8th grade reading score, three of the four coefficients that were removed from the model were all the features that took into account the number of students enrolled in the eighth grade. For lasso regularization, the best lambda was found to be 0.001693487, and this resulted in an R^2^ of around 0.57, still beating out best subset selection by a significant margin, but far behind what was achieved by ridge regularization, which we had assumed would be the case given the colinearity of the data.
+
+
+```{r}
+set.seed(42)
+cv.out <-cv.glmnet(x, y, alpha = 1)
+bestlamLasso <- cv.out$lambda.min
+ridge.pred <- predict(cv.out, s = bestlamLasso,  newx = x)
+
+ss_total <- sum((small$AVG_READING_8_SCORE - mean(small$AVG_READING_8_SCORE))^2)
+ss_residual <- sum((ridge.pred - mean(small$AVG_READING_8_SCORE))^2)
+
+lasso_r2 <- 1 - (ss_residual / ss_total)
+coef(cv.out, s = "lambda.min")
+```
+
+
+
+### Neural Net
+
+While the size of our data makes the use of a neural net improper, I thought it would still be interesting to train and compare to our other models and see how the loss of interpretability could result in better fitting to the variability of the data. This model had two hidden layers, the first with five nodes and the second with three. By training on all the data an R^2^ of 1 was achieved which is obviously due to the size of the data and the neural net being able to memorize it. If you would like to see the code used, expand the code block below.
+
+```{r}
+model <- neuralnet(AVG_READING_8_SCORE~., 
+                   data = small, 
+                   hidden = c(5, 3), 
+                   linear.output = TRUE)
+
+predictions <- predict(model, small[, -c(18)])
+
+ss_total <- sum((small$AVG_READING_8_SCORE - mean(small$AVG_READING_8_SCORE))^2)
+ss_residual <- sum((predictions - mean(small$AVG_READING_8_SCORE))^2)
+nn_r2 <- 1 - (ss_residual / ss_total)
+```
+
+
+### Comparison and Cross-Validation
+
+Finally, I wanted to compare the models used more closely, seeing which method would be the best for our second guiding question of if we can predict academic success. In order to do this I chose to look at four of the models trained, those being the best feature subset regression, ridge regression, lasso regression, and neural nets. For comparison of R^2^ I will simply be looking at the R^2^ attained previously by training on the entire data. The other metric I will be using is MSE. I will be running 10-fold cross-validation on each of these models, tracking their MSE across each fold. The ridge and lasso regression models will be trained with the best lambda found previously.
+
+```{r}
+set.seed(42)
+k <- 10
+n <-nrow(small)
+folds <-sample(rep(1:k, length = n))
+errors <- numeric(k)
+
+
+for (j in 1:k) {
+  model <- lm(AVG_READING_8_SCORE~FEDERAL_REVENUE+STATE_REVENUE+INSTRUCTION_EXPENDITURE+GRADES_KG_G+GRADES_4_G+GRADES_12_G+GRADES_9_12_G+GRADES_ALL_G+eps, data=data[folds !=j, ])
+  preds <- predict(model, small[folds == j, -c(18)])
+  mse <- mean((small[folds==j, ]$AVG_READING_8_SCORE - preds)^2)
+  
+  errors[j] <- mse
+}
+
+lm.Errors <- errors
+
+for (j in 1:k) {
+  model <- cv.glmnet(x[folds != j, ], y[folds != j], alpha = 0)
+  preds <- predict(model, 
+                   s = bestlamRidge,  
+                   newx = x[folds == j, ])
+  mse <- mean((small[folds==j, ]$AVG_READING_8_SCORE - preds)^2)
+  
+  errors[j] <- mse
+}
+
+ridge.Errors <- errors
+
+for (j in 1:k) {
+  model <- cv.glmnet(x[folds != j, ], y[folds != j], alpha = 1)
+  preds <- predict(model, s = bestlamLasso,  newx = x[folds == j, ])
+  mse <- mean((small[folds==j, ]$AVG_READING_8_SCORE - preds)^2)
+  
+  errors[j] <- mse
+}
+
+lasso.Errors <- errors
+
+for (j in 1:k) {
+  model <- neuralnet(AVG_READING_8_SCORE~., 
+                     data = small[folds != j, ], 
+                     hidden = c(5, 3), 
+                     linear.output= TRUE)
+  preds <- predict(model, small[folds == j, -c(9)])
+  mse <- mean((small[folds==j, ]$AVG_READING_8_SCORE - preds)^2)
+  
+  errors[j] <- mse
+}
+
+snn.Errors <- errors
+```
+
+Plotted below is the results of running 10-fold cross-validation on each of the top models. While the results aren't exactly surprising given the nature of how each model functions, it still does provide us with some basis for which model we would choose if we had to predict academic success. Based on the information displayed below it is obvious the neural net is overfitting, but that is to be expected given the fact that it is essentially memorizing the data given to it. Also expected is that the basic linear model is generalizing the data very well, only struggling with a few folds, those being the same ridge and lasso struggled with. What is interesting is that lasso performed nearly the same as the basic linear model, have and MSE incredibly similar to it almost the whole time. This may be do to the lasso finding a similar model to the best subset model. Ridge does not appear to be generalizing the data quite as well as either the basic linear model or lasso, but it's not too far off in most cases.
+
+```{r}
+errors <- data.frame(
+  fold = c(1:10),
+  'Neural Net' = snn.Errors,
+  'Basic LM' = lm.Errors,
+  'Ridge' = ridge.Errors,
+  'Lasso' = lasso.Errors
+) %>% 
+  pivot_longer(
+    c(2:5), names_to = 'model', values_to = 'error'
+  )
+
+
+ggplot(errors, aes(x=fold, y=error, color=model))+
+  geom_point()+
+  geom_line()+
+  theme_bw()+
+  labs(
+    x = 'Fold',
+    y = 'MSE',
+    title = 'MSE Over 10-Fold Cross-Validation',
+    color = 'Model'
+  ) +
+  scale_x_continuous(breaks = seq(2,10,2))+
+  theme(
+    plot.title = element_text(hjust=0.5)
+  )
+```
+
+Plotted below are the average MSE computed across each fold and the R^2^ of each model tested. I believe this plot to summarize the overall results very well. We can clearly see that the neural net is not suitable for this size of data as it just results in overfitting. It can also be seen the while lasso and the best feature subset methods resulted in the best MSE, their lacking R^2^ compared to ridge regression makes the small improvement of MSE not worth it. Overall, Ridge regression is the best model for the task of predicting academic achievement in this dataset as it handles the colinearity of the data well, while also generalizing the data much better than a more complex model could.
+
+```{r}
+R2 <- c(nn_r2, summary(lm4)$r.squared, ridge_r2, lasso_r2)
+avg_mse <- c(mean(snn.Errors), mean(lm.Errors), mean(ridge.Errors), mean(lasso.Errors))
+model <- c('Neural Net', 'Basic LM', 'Ridge', 'Lasso')
+
+new_plot <- data.frame(
+  Model = model,
+  R2,
+  avg_mse
+)
+
+p1 <- ggplot(new_plot, aes(x=Model, y=R2))+
+  geom_col(fill = "#A6C9E2")+
+  theme_bw()+
+  geom_text(aes(label = round(R2, 2)), vjust = -0.3)+
+  labs(
+    y='R-Squared',
+    title ='Comparison of R² Scores\nAcross Different Models'
+  )+
+  theme(
+    plot.title = element_text(hjust=0.5)
+  )
+
+p2 <- ggplot(new_plot, aes(x=Model, y=avg_mse))+
+  geom_col(fill = "#A6C9E2")+
+  theme_bw()+
+  geom_text(aes(label = round(avg_mse, 2)), vjust = -0.3)+
+  labs(
+    y='Avg MSE',
+    title ='Comparison of Average MSE\nAcross Different Models'
+  )+
+  theme(
+    plot.title = element_text(hjust=0.5)
+  )
+
+p1 | p2
+```
+
+
+
+
+## Data Dictionary
+
+The data for this project has come from the Kaggle dataset ‘[U.S. Education Datasets: Unification Project](https://www.kaggle.com/datasets/noriuk/us-education-datasets-unification-project?resource=download)’, which combines data from three main sources:
+
+1. Enrollment data from [National Center for Education Statistics](https://nces.ed.gov/ccd/stnfis.asp). 
+2. School financials from [United States Census Bureau](https://www.census.gov/programs-surveys/school-finances/data/tables.html).
+3. Academic Achievement from [The Nation's Report card](https://www.nationsreportcard.gov/ndecore/xplore/NDE).
+
+This data was put together at yearly state level, containing data from 1986 to 2019, when this data was compiled.
+
+The raw data from the 'states_all.csv' can be seen below:
+
+```{r}
+# https://stackoverflow.com/questions/58526047/customizing-how-datatables-displays-missing-values-in-shiny
+# Filling blanks with NA came from the above link.
+
+rowCallback <- c(
+    "function(row, data){",
+    "  for(var i=0; i<data.length; i++){",
+    "    if(data[i] === null){",
+    "      $('td:eq('+i+')', row).html('NA')",
+    "        .css({'color': 'rgb(151,151,151)', 'font-style': 'italic'});",
+    "    }",
+    "  }",
+    "}"  
+  )
+
+datatable(states, options = list(rowCallback = JS(rowCallback)))
+```
+
+<br>
+
+The following is the summary statistics for all features in the dataset, not including non-numeric columns:
+
+```{r}
+datatable(summaryStats(states[, c(3:25)]),
+          options = list(rowCallback = JS(rowCallback)))
+```
+
+<br>
+
+<span style="font-size: 20px; font-weight: bold;">Column Breakdown</span>
+
+**Identification**:
+
+* `PRIMARY_KEY`: A combination of the year and state name.
+* `STATE`
+* `YEAR`
+
+**Enrollment**:
+
+A breakdown of students enrolled in schools by school year. Pulled from the NCES database.
+
+* `GRADES_PK`: Number of students in Pre-Kindergarten education.
+* `GRADES_4`: Number of students in fourth grade.
+* `GRADES_8`: Number of students in eighth grade
+* `GRADES_12`: Number of students in twelfth grade.
+* `GRADES_1_8`: Number of students in the first through eighth grades.
+* `GRADES_9_12`: Number of students in the ninth through twelfth grades.
+* `GRADES_ALL`: The count of all students in the state. Comparable to ENROLL in the financial data (which is the U.S.
+Census Bureau's estimate for students in the state).
+
+**Financials**:
+
+A breakdown of states by revenue and expenditure. Pulled from the United States Census Bereau API.
+
+* `ENROLL`: The U.S. Census Bureau's count for students in the state. Should be comparable to GRADES_ALL (which is the
+NCES's estimate for students in the state).
+* `TOTAL_REVENUE`: The total amount of revenue for the state.
+* `FEDERAL_REVENUE`: Fraction of total revenue from federal sources.
+* `STATE_REVENUE`: Fraction of total revenue from state sources.
+* `LOCAL_REVENUE`: Fraction of total revenue from local sources.
+* `TOTAL_EXPENDITURE`: The total expenditure for the state.
+* `INSTRUCTION_EXPENDITURE`: Fraction of total expenditure for instruction.
+* `SUPPORT_SERVICES_EXPENDITURE`: Fraction of total expenditure for support services.
+* `CAPITAL_OUTLAY_EXPENDITURE`: Fraction of total expenditure for capital outlay.
+* `OTHER_EXPENDITURE`: Fraction of total expenditure for other items.
+
+**Academic Achievement**: 
+
+A breakdown of student performance as assessed by the corresponding exams (math and reading, grades 4 and 8). Pulled from the Nation's Report Card database.
+
+* `AVG_MATH_4_SCORE`: The state's average score for fourth graders taking the NAEP math exam.
+* `AVG_MATH_8_SCORE`: The state's average score for eight graders taking the NAEP math exam.
+* `AVG_READING_4_SCORE`: The state's average score for fourth graders taking the NAEP reading exam.
+* `AVG_READING_8_SCORE`: The state's average score for eighth graders taking the NAEP reading exam.
+
+:::
+
+## Conclusions
+
+From the analysis done, I believe we have seen very strong evidence that expenditure, in a way, does relate to academic achievement. From the model we fit to our created variable `eps`, we saw an estimate slope of 0.77, meaning that for every one unit increase in expenditure per student, we expect to see a 0.77 increase in NAEP reading score, a near 1-to-1 relationship. While this model does fail to account for a large amount of the variability in the 8th grade NAEP reading score, it is still a statistically significant relationship that should be strongly considered as a factor of academic achievement.
+
+In a time where I feel that we see a large number of voices are saying we spend too much on education, I think it is important to consider the statistically significant relationship between the amount we spend on our students and their success. This analysis suggests that for our students to reach higher levels of academic success, we should divert more funding to them and I agree. If this modeling were accurate we would see more tax payer money be funneled into the education system and we would see our students reach greater academic heights. If this modeling were to be inaccurate and to be adopted, we would a large amount of tax money be spent wastefully for not much return.
+
+However, while I do feel this is evidence enough to show that we should be spending more on individual students, I do not feel it is enough to show that we can fully predict academic achievement. The exercises done in training models to predict average 8th grade NAEP reading scores demonstrate that while we can piece together a relatively strong model for predicting academic success, there are still important features missing that prevent our models from capturing a greater amount of the variability in these reading scores. This analysis is limited by the highly correlated data and the limited scope of insight into our education system.
+
+While the neural net was able to memorize the data for this task, I don't think there will come a time when there is enough relevant data to employ a model like it for a task such as this. Currently, the most complete data comes from the years 2003-2015. I would like to work with more data for better modeling and more recent data in particular, so that it is more relevant for our current selves. I would also like to explore more possible features beyond just what was presented here, because as we saw, one strong feature like `eps` can explain quite a bit about a feature like NAEP reading scores.

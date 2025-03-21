@@ -1,0 +1,515 @@
+---
+title: "DataModeling"
+author: "Ethan Childs"
+date: "2025-03-13"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(leaps)
+library(glmnet)
+library(neuralnet)
+states <- read_csv('states_all.csv')
+```
+
+
+```{r}
+getStats <- function(data) {
+  stats <- c(min(data, na.rm = TRUE), 
+             max(data, na.rm = TRUE), 
+             mean(data, na.rm = TRUE), 
+             median(data, na.rm = TRUE), 
+             sd(data, na.rm = TRUE), 
+             length(data), 
+             sum(is.na(data)))
+  
+  return(stats)
+}
+
+summaryStats <- function(data) {
+  cols <- colnames(data)
+  
+  stats_list <- list()  
+  
+  for (col in cols){
+    stats <- getStats(data[[col]])
+    stats_list[[col]] <- stats  
+  }
+  
+  
+  df <- as.data.frame(stats_list)
+  rownames(df) <- c("min", "max", "mean", "median", "sd", "n", "num_na")
+  return(df)
+}
+```
+
+
+```{r}
+data <- states %>% 
+  filter(!STATE %in% c('NATIONAL', 'DODEA', 'DISTRICT_OF_COLUMBIA')) %>% 
+  filter(YEAR %in% seq(2003,2015,2)) %>% 
+  mutate(
+    eps = TOTAL_EXPENDITURE / ENROLL
+  ) %>% 
+  select(-c(1,2))
+
+data$GRADES_PK_G[is.na(data$GRADES_PK_G)] <- mean(data$GRADES_PK_G, na.rm = TRUE)
+summaryStats(data)
+```
+
+```{r}
+lm1 <- lm(AVG_READING_8_SCORE~., data= data[, c(2:19, 23)])
+
+summary(lm1)
+```
+
+```{r}
+lm2 <- lm(AVG_READING_8_SCORE~., data= data[, c(2:19, 23,24)])
+
+summary(lm2)
+```
+
+
+```{r}
+lm5 <- lm(AVG_READING_8_SCORE~., data= data[, c(4,12,23,24)])
+
+summary(lm5)
+```
+
+```{r}
+lm6 <- lm(AVG_READING_8_SCORE~FEDERAL_REVENUE+GRADES_PK_G+eps+TOTAL_EXPENDITURE*ENROLL, data=data)
+
+summary(lm6)
+```
+
+```{r}
+lm7 <- lm(AVG_READING_8_SCORE~FEDERAL_REVENUE+GRADES_PK_G+TOTAL_EXPENDITURE*ENROLL, data=data)
+
+summary(lm7)
+```
+
+
+```{r}
+lm9 <- lm(AVG_READING_8_SCORE~eps, data=data)
+summary(lm9)
+```
+
+```{r}
+plot(AVG_READING_8_SCORE~eps, data=data)
+abline(lm9)
+```
+
+```{r}
+lm10 <- lm(AVG_READING_8_SCORE~TOTAL_EXPENDITURE*ENROLL, data=data)
+summary(lm10)
+```
+
+```{r}
+regfit.full <-regsubsets(AVG_READING_8_SCORE~., data = data[, c(1:5, 7:19, 23,24)], nvmax = 22)
+regSum <- summary(regfit.full)
+regSum
+```
+
+```{r}
+par(mfrow = c(2, 2))
+plot(regSum$rss, xlab = "Number of Variables",
+ ylab = "RSS", type = "l")
+plot(regSum$adjr2, xlab = "Number of Variables",
+ ylab = "Adjusted RSq", type = "l")
+plot(regSum$bic, xlab = "Number of Variables",
+ ylab = "bic", type = "l")
+plot(regSum$cp, xlab = "Number of Variables",
+ ylab = "Cp", type = "l")
+```
+
+```{r}
+regSum$rsq
+```
+
+```{r}
+regSum$bic
+```
+
+```{r}
+regSum$cp
+```
+
+```{r}
+coef(regfit.full, 8)
+```
+
+```{r}
+coef(regfit.full, 9)
+```
+
+```{r}
+coef(regfit.full, 10)
+```
+
+```{r}
+lm11 <- lm(AVG_READING_8_SCORE~FEDERAL_REVENUE+STATE_REVENUE+GRADES_KG_G+GRADES_4_G+GRADES_12_G+GRADES_9_12_G+GRADES_ALL_G+eps, data=data)
+
+lm12 <- lm(AVG_READING_8_SCORE~FEDERAL_REVENUE+STATE_REVENUE+INSTRUCTION_EXPENDITURE+GRADES_KG_G+GRADES_4_G+GRADES_12_G+GRADES_9_12_G+GRADES_ALL_G+eps, data=data)
+
+lm13 <- lm(AVG_READING_8_SCORE~TOTAL_REVENUE+FEDERAL_REVENUE+STATE_REVENUE+SUPPORT_SERVICES_EXPENDITURE+GRADES_KG_G+GRADES_4_G+GRADES_12_G+GRADES_9_12_G+GRADES_ALL_G+eps, data=data)
+```
+
+```{r}
+summary(lm11)
+```
+
+```{r}
+summary(lm12)
+```
+```{r}
+summary(lm13)
+```
+
+```{r}
+set.seed(42)
+train <- sample(c(TRUE, FALSE), size = nrow(data), replace = TRUE, prob = c(0.8, 0.2))  
+test <- !train
+```
+
+```{r}
+regfit.Val <-regsubsets(AVG_READING_8_SCORE~., 
+                         data=data[train, c(1:5, 7:19, 23,24)], nvmax = 22)
+
+test.mat <- model.matrix(AVG_READING_8_SCORE~., data=data[test, c(1:5, 7:19, 23,24)])
+
+
+val.errors <-rep(NA, 19)
+
+for (i in 1:19) {
+   coefi <-coef(regfit.Val, id = i)
+   pred <- test.mat[, names(coefi)] %*% coefi
+   length(pred)
+   sum(test)
+   val.errors[i] <- mean(((data$AVG_READING_8_SCORE[test]- pred)^2))
+}
+
+val.errors
+```
+
+
+```{r}
+predict.regsubsets <- function(object, newdata, id, ...) {
+  form <-as.formula(object$call[[2]])
+  mat <-model.matrix(form, newdata)
+  coefi <-coef(object, id = id)
+  xvars <-names(coefi)
+  mat[, xvars] %*% coefi
+}
+
+k <- 10
+n <-nrow(data)
+set.seed(42)
+folds <-sample(rep(1:k, length = n))
+cv.errors <-matrix(NA, k, 19, dimnames = list(NULL, paste(1:19)))
+
+for (j in 1:k) {
+ best.fit <-regsubsets(AVG_READING_8_SCORE~.,
+ data = data[folds != j, c(1:5, 7:19, 23,24)],
+ nvmax = 19)
+ for (i in 1:19) {
+   pred <-predict.regsubsets(best.fit, data[folds == j, c(1:5, 7:19, 23,24)], id = i)
+   cv.errors[j, i] <-mean((data$AVG_READING_8_SCORE[folds == j]- pred)^2)
+ }
+}
+
+mean.cv.errors <-apply(cv.errors, 2, mean)
+mean.cv.errors
+```
+
+```{r}
+par(mfrow = c(1, 1))
+plot(mean.cv.errors, type = "b")
+```
+
+```{r}
+x <-model.matrix(AVG_READING_8_SCORE~., data[, c(1:5, 7:19, 23,24)])[,-1]
+y <- data$AVG_READING_8_SCORE
+
+set.seed(42)
+y.test <- y[test]
+
+cv.out <-cv.glmnet(x[train, ], y[train], alpha = 0)
+plot(cv.out)
+```
+
+```{r}
+bestlam <- cv.out$lambda.min
+bestlam
+```
+
+```{r}
+out <-glmnet(x, y, alpha = 0)
+predict(out, type = "coefficients", s = bestlam)[1:20, ]
+```
+
+
+```{r}
+cv.out <-cv.glmnet(x[train, ], y[train], alpha = 1)
+plot(cv.out)
+```
+
+```{r}
+bestlam <- cv.out$lambda.min
+bestlam
+```
+
+```{r}
+out <-glmnet(x, y, alpha = 0)
+predict(out, type = "coefficients", s = bestlam)[1:20, ]
+```
+
+```{r}
+train_data <- data[train, c(1:5, 7:19,23, 24)]
+test_data <- data[test, c(1:5, 7:19,23,24)]
+
+model <- neuralnet(AVG_READING_8_SCORE~., 
+                   data = data[,c(1:5, 7:19,23, 24)], 
+                   hidden = c(5, 3), 
+                   linear.output = TRUE)
+
+predictions <- predict(model, data[, c(1:5, 7:19, 24)])
+
+ss_total <- sum((train_data$AVG_READING_8_SCORE - mean(train_data$AVG_READING_8_SCORE))^2)
+ss_residual <- sum((predictions - mean(train_data$AVG_READING_8_SCORE))^2)
+nn_r2 <- 1 - (ss_residual / ss_total)
+nn_r2
+```
+
+```{r}
+k <- 10
+n <-nrow(data)
+set.seed(42)
+folds <-sample(rep(1:k, length = n))
+errors <- numeric(k)
+
+for (j in 1:k) {
+  model <- neuralnet(AVG_READING_8_SCORE~., 
+                     data = data[folds != j, c(1:5, 7:19,23, 24)], 
+                     hidden = c(5, 3), 
+                     linear.output= TRUE)
+  preds <- predict(model, data[folds == j, c(1:5, 7:19, 24)])
+  mse <- mean((data[folds==j, ]$AVG_READING_8_SCORE - preds)^2)
+  
+  errors[j] <- mse
+}
+
+nn_errors <- errors
+mean(nn_errors)
+```
+
+```{r}
+smaller <- data[, c(4,5,8,13,14,16,18,19,23,24)]
+
+train_data <- smaller[train, ]
+test_data <- smaller[test, ]
+
+model <- neuralnet(AVG_READING_8_SCORE~., data = train_data, hidden = c(5, 3), linear.output = TRUE)
+
+predictions <- predict(model, train_data[, -c(9)])
+
+ss_total <- sum((train_data$AVG_READING_8_SCORE - mean(train_data$AVG_READING_8_SCORE))^2)
+ss_residual <- sum((predictions - mean(train_data$AVG_READING_8_SCORE))^2)
+snn_r2 <- 1 - (ss_residual / ss_total)
+snn_r2
+```
+
+```{r}
+k <- 10
+n <-nrow(smaller)
+set.seed(42)
+folds <-sample(rep(1:k, length = n))
+errors <- numeric(k)
+
+for (j in 1:k) {
+  model <- neuralnet(AVG_READING_8_SCORE~., 
+                     data = smaller[folds != j, ], 
+                     hidden = c(5, 3), 
+                     linear.output= TRUE)
+  preds <- predict(model, data[folds == j, -c(9)])
+  mse <- mean((data[folds==j, ]$AVG_READING_8_SCORE - preds)^2)
+  
+  errors[j] <- mse
+}
+
+snn.Errors <- errors
+mean(snn.Errors)
+```
+
+```{r}
+lm12 <- lm(AVG_READING_8_SCORE~., data=smaller)
+summary(lm12)
+
+lm_r2 <- summary(lm12)$r.squared
+```
+
+```{r}
+k <- 10
+n <-nrow(smaller)
+set.seed(42)
+folds <-sample(rep(1:k, length = n))
+errors <- numeric(k)
+
+for (j in 1:k) {
+  model <- lm(AVG_READING_8_SCORE~., data=smaller[folds !=j, ])
+  preds <- predict(model, data[folds == j, -c(9)])
+  mse <- mean((data[folds==j, ]$AVG_READING_8_SCORE - preds)^2)
+  
+  errors[j] <- mse
+}
+
+lm.Errors <- errors
+mean(lm.Errors)
+```
+
+```{r}
+x <-model.matrix(AVG_READING_8_SCORE~., data[, c(1:5, 7:19, 23,24)])[,-1]
+y <- data$AVG_READING_8_SCORE
+
+
+cv.out <-cv.glmnet(x, y, alpha = 0)
+bestlam <- cv.out$lambda.min
+ridge.pred <- predict(cv.out, s = bestlam,  newx = x)
+
+ss_total <- sum((train_data$AVG_READING_8_SCORE - mean(train_data$AVG_READING_8_SCORE))^2)
+ss_residual <- sum((ridge.pred - mean(train_data$AVG_READING_8_SCORE))^2)
+ridge_r2 <- 1 - (ss_residual / ss_total)
+
+coef(cv.out)
+```
+
+```{r}
+k <- 10
+n <-nrow(smaller)
+set.seed(42)
+folds <-sample(rep(1:k, length = n))
+errors <- numeric(k)
+
+for (j in 1:k) {
+  model <- cv.glmnet(x[folds != j, ], y[folds != j], alpha = 0)
+  preds <- predict(model, s = bestlam,  newx = x[folds == j, ])
+  mse <- mean((data[folds==j, ]$AVG_READING_8_SCORE - preds)^2)
+  
+  errors[j] <- mse
+}
+
+ridge.Errors <- errors
+mean(ridge.Errors)
+```
+
+```{r}
+x <-model.matrix(AVG_READING_8_SCORE~., data[, c(1:5, 7:19, 23,24)])[,-1]
+y <- data$AVG_READING_8_SCORE
+
+set.seed(42)
+
+cv.out <-cv.glmnet(x, y, alpha = 1)
+bestlam <- cv.out$lambda.min
+lasso.pred <- predict(cv.out, s = bestlam,  newx = x)
+
+ss_total <- sum((train_data$AVG_READING_8_SCORE - mean(train_data$AVG_READING_8_SCORE))^2)
+ss_residual <- sum((lasso.pred - mean(train_data$AVG_READING_8_SCORE))^2)
+lasso_r2 <- 1 - (ss_residual / ss_total)
+lasso_r2
+```
+
+```{r}
+k <- 10
+n <-nrow(smaller)
+set.seed(42)
+folds <-sample(rep(1:k, length = n))
+errors <- numeric(k)
+
+for (j in 1:k) {
+  model <- cv.glmnet(x[folds != j, ], y[folds != j], alpha = 1)
+  preds <- predict(model, s = bestlam,  newx = x[folds == j, ])
+  mse <- mean((data[folds==j, ]$AVG_READING_8_SCORE - preds)^2)
+  
+  errors[j] <- mse
+}
+
+lasso.Errors <- errors
+mean(lasso.Errors)
+```
+
+```{r}
+errors <- data.frame(
+  fold = c(1:10),
+  'Neural Net' = nn_errors,
+  'Basic LM' = lm.Errors,
+  'Ridge' = ridge.Errors,
+  'Lasso' = lasso.Errors
+) %>% 
+  pivot_longer(
+    c(2:5), names_to = 'model', values_to = 'error'
+  )
+
+
+ggplot(errors, aes(x=fold, y=error, color=model))+
+  geom_point()+
+  geom_line()+
+  theme_bw()+
+  labs(
+    x = 'Fold',
+    y = 'MSE',
+    title = 'MSE Over 10-Fold Cross-Validation',
+    color = 'Model'
+  ) +
+  scale_x_continuous(breaks = seq(2,10,2))+
+  theme(
+    plot.title = element_text(hjust=0.5)
+  )
+```
+
+
+```{r}
+R2 <- c(nn_r2, lm_r2, ridge_r2, lasso_r2)
+avg_mse <- c(mean(nn_errors), mean(lm.Errors), mean(ridge.Errors), mean(lasso.Errors))
+model <- c('Neural Net', 'Basic LM', 'Ridge', 'Lasso')
+
+new_plot <- data.frame(
+  Model = model,
+  R2,
+  avg_mse
+)
+```
+
+```{r}
+ggplot(new_plot, aes(x=Model, y=R2))+
+  geom_col(fill = "#A6C9E2")+
+  theme_bw()+
+  geom_text(aes(label = round(R2, 2)), vjust = -0.3)+
+  labs(
+    y='R-Squared',
+    title ='Comparison of R² Scores Across Different Models'
+  )+
+  theme(
+    plot.title = element_text(hjust=0.5)
+  )
+```
+
+```{r}
+ggplot(new_plot, aes(x=Model, y=avg_mse))+
+  geom_col(fill = "#A6C9E2")+
+  theme_bw()+
+  geom_text(aes(label = round(avg_mse, 2)), vjust = -0.3)+
+  labs(
+    y='Avg MSE',
+    title ='Comparison of Average MSE Across Different Models'
+  )+
+  theme(
+    plot.title = element_text(hjust=0.5)
+  )
+```
+
+
+
+
+
+
+
