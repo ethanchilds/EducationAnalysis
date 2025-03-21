@@ -62,6 +62,8 @@ For this project, my guiding questions were as follows:
 * Can we use enrollment and finances to predict academic achievement?
   + Partially being a continuation of the previous question, this question looks to explore the predictive power of all features in the dataset and how they are related with academic performance. A strong ability to predict academic achievement could lead to the ability to note ways states can improve their own academic achievement.
 
+::: {.panel-tabset .nav-pills}
+
 ## Data Processing
 
 While this data is actually rather clean thanks to the work of Roy when he compiled this data, for our purposes, which will require no NA values to be present in the data, this data did need some processing done prior to any further work. 
@@ -635,6 +637,8 @@ A breakdown of student performance as assessed by the corresponding exams (math 
 * `AVG_MATH_8_SCORE`: The state's average score for eight graders taking the NAEP math exam.
 * `AVG_READING_4_SCORE`: The state's average score for fourth graders taking the NAEP reading exam.
 * `AVG_READING_8_SCORE`: The state's average score for eighth graders taking the NAEP reading exam.
+
+:::
 
 ## Conclusions
 
