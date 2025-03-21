@@ -5,6 +5,14 @@ format:
   html:
     code-fold: true
     code-tools: true
+include-in-header:
+  - text: |
+      <style>
+      .panel-tabset > .nav-tabs,
+      .panel-tabset > .tab-content {
+        border: none;
+      }
+      </style>
 editor: visual
 ---
 
